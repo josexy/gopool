@@ -5,13 +5,32 @@ import (
 	"time"
 )
 
+// 传参和返回值
+type Callable func(...interface{}) interface{}
+
+type Runnable struct {
+	Arg []interface{}
+	F   Callable
+}
+
+func NewFunc(f Callable, arg ...interface{}) *Runnable {
+	return &Runnable{
+		Arg: arg,
+		F:   f,
+	}
+}
+
+func (r *Runnable) Invoke() interface{} {
+	return r.F(r.Arg...)
+}
+
 type IWorker interface {
 	Get() interface{}
 }
 
 type Worker struct {
-	f    func() interface{}
-	pool *Pool
+	f    *Runnable // 实际执行任务
+	pool *Pool     // 绑定的池
 }
 
 type ResultWorker struct {
@@ -21,13 +40,13 @@ type ResultWorker struct {
 	doneChan chan struct{}
 }
 
-func NewWorker(f func() interface{}) *Worker {
-	return &Worker{f: f}
+func NewWorker(f Callable, arg ...interface{}) *Worker {
+	return &Worker{f: NewFunc(f, arg...)}
 }
 
-func NewResultWorker(f func() interface{}, timeout time.Duration) *ResultWorker {
+func NewResultWorker(f Callable, timeout time.Duration, arg ...interface{}) *ResultWorker {
 	rw := &ResultWorker{
-		Worker:   NewWorker(f),
+		Worker:   NewWorker(f, arg),
 		retChan:  make(chan interface{}, 1),
 		doneChan: make(chan struct{}, 1),
 		timeout:  timeout,

@@ -13,12 +13,10 @@ var (
 )
 
 type Pool struct {
-	shutdown     int32
-	currentWorks int32
-	maxWorkers   int
-	workerChan   chan IWorker
-	quitChan     chan struct{}
-	doneChan     chan struct{}
+	shutdown   int32
+	maxWorkers int
+	workerChan chan IWorker
+	quitChan   chan struct{}
 }
 
 func NewPool(workers int) *Pool {
@@ -26,7 +24,6 @@ func NewPool(workers int) *Pool {
 		maxWorkers: workers,
 		workerChan: make(chan IWorker),
 		quitChan:   make(chan struct{}),
-		doneChan:   make(chan struct{}),
 	}
 	p.start()
 	return p
@@ -56,7 +53,7 @@ func (p *Pool) run() {
 
 				go func(c context.Context) {
 					select {
-					case w.retChan <- w.f():
+					case w.retChan <- w.f.Invoke():
 						// 当 w.f() 能够在时间 t.timeout 内完成，将结果存放到 retChan 中
 						cancel()
 					}
@@ -71,31 +68,29 @@ func (p *Pool) run() {
 				}
 			} else if w, ok := worker.(*Worker); ok {
 				// 无返回值
-				_ = w.f()
+				_ = w.f.Invoke()
 			}
-			// 子协程执行完任务，通知用户可以继续submit worker
-			p.doneChan <- struct{}{}
 		case <-p.quitChan: // 退出子协程
 			return
 		}
 	}
 }
 
-func (p *Pool) Submit(f func() interface{}) *Worker {
+func (p *Pool) Submit(f Callable, arg ...interface{}) *Worker {
 	if p.IsShutdown() {
 		panic(ErrPoolShutdown)
 	}
-	worker := NewWorker(f)
+	worker := NewWorker(f, arg...)
 	worker.pool = p
 	p.submit(worker)
 	return worker
 }
 
-func (p *Pool) SubmitResult(f func() interface{}, timeout time.Duration) *ResultWorker {
+func (p *Pool) SubmitResult(f Callable, timeout time.Duration, arg ...interface{}) *ResultWorker {
 	if p.IsShutdown() {
 		panic(ErrPoolShutdown)
 	}
-	worker := NewResultWorker(f, timeout)
+	worker := NewResultWorker(f, timeout, arg...)
 	worker.pool = p
 	p.submit(worker)
 	return worker
@@ -105,16 +100,7 @@ func (p *Pool) submit(worker IWorker) {
 	if worker == nil {
 		panic(ErrWorkerIsNil)
 	}
-
-	for {
-		select {
-		case p.workerChan <- worker: // 将worker传递给某个子协程
-			atomic.AddInt32(&p.currentWorks, 1)
-			return
-		case <-p.doneChan: // 某个子协程执行完后通知用户可以继续submit
-			atomic.AddInt32(&p.currentWorks, -1)
-		}
-	}
+	p.workerChan <- worker
 }
 
 func (p *Pool) IsShutdown() bool {
@@ -122,18 +108,11 @@ func (p *Pool) IsShutdown() bool {
 }
 
 func (p *Pool) Shutdown() {
-	// 等待当前所有worker
-	count := atomic.LoadInt32(&p.currentWorks)
-	for i := 0; i < int(count); i++ {
-		<-p.doneChan
-	}
 	// 退出所有子协程
 	for i := 0; i < p.maxWorkers; i++ {
 		p.quitChan <- struct{}{}
 	}
-	atomic.StoreInt32(&p.currentWorks, 0)
 	atomic.StoreInt32(&p.shutdown, 1)
 	close(p.workerChan)
 	close(p.quitChan)
-	close(p.doneChan)
 }
